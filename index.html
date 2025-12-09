@@ -2,11 +2,9 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>究極オセロAI（ID, AB, TT, 高速学習）</title>
+    <title>究極オセロAI（修正版）</title>
     <style>
-        /* ------------------------------------------------ */
-        /* CSS: スタイリング */
-        /* ------------------------------------------------ */
+        /* CSSは変更なし */
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             text-align: center;
@@ -80,10 +78,8 @@
         const WHITE = 2;
         const EMPTY = 0;
         
-        // AIの思考時間制限 (ミリ秒) - 対戦モードのみ適用
         const TIME_LIMIT = 5000; 
         
-        // トランポジションテーブル
         let transpositionTable = new Map();
         
         let board;
@@ -97,7 +93,6 @@
         const boardElement = document.getElementById('board');
         const learningInfoElement = document.getElementById('learning-info');
 
-        // 評価関数の重み
         let evaluationWeights = [
             [ 100, -20,  10,   5,   5,  10, -20, 100],
             [-20,  -50,  -2,  -2,  -2,  -2, -50, -20],
@@ -241,7 +236,6 @@
         // ------------------------------------------------
 
         function minimax(boardState, depth, alpha, beta, maximizingPlayer) {
-            // **時間切れチェック**
             if (performance.now() - startTime > TIME_LIMIT) {
                 return maximizingPlayer ? Infinity : -Infinity;
             }
@@ -249,12 +243,10 @@
             const player = maximizingPlayer ? WHITE : BLACK;
             const validMoves = getValidMoves(boardState, player);
 
-            // 終端条件
             if (depth === 0 || isGameOver(boardState) || validMoves.length === 0) {
                 return evaluateBoard(boardState, WHITE);
             }
             
-            // **トランポジションテーブルの参照**
             const hash = getBoardHash(boardState);
             const entry = transpositionTable.get(hash);
             if (entry && entry.depth >= depth) {
@@ -293,7 +285,6 @@
                 flag = 'EXACT';
             }
 
-            // **トランポジションテーブルへの保存**
             transpositionTable.set(hash, {
                 depth: depth,
                 score: bestScore,
@@ -303,20 +294,18 @@
             return bestScore;
         }
 
-        /** AIの最善手を選択 (学習モード/対戦モードの分岐あり) */
         function getBestMove(currentBoard, player, isLearningMode = false) {
             let validMoves = getValidMoves(currentBoard, player);
             if (validMoves.length === 0) return null;
 
             if (isLearningMode) {
-                // **【学習モード】高速な貪欲法 (1手先読み)**
+                // 【学習モード】高速な貪欲法 (1手先読み)
                 let bestScore = -Infinity;
                 let bestMove = validMoves[0];
                 
                 for (const move of validMoves) {
                     const nextBoard = copyBoard(currentBoard);
                     doMove(move.r, move.c, player, nextBoard);
-                    // 次の相手の手は考慮せず、単純にその局面の評価値を最大化
                     const score = evaluateBoard(nextBoard, player); 
 
                     if (score > bestScore) {
@@ -327,7 +316,7 @@
                 return bestMove;
 
             } else {
-                // **【対戦モード】本格的な反復深化と時間制限探索**
+                // 【対戦モード】本格的な反復深化と時間制限探索
                 startTime = performance.now();
                 bestMoveInSearch = validMoves[0];
 
@@ -342,7 +331,6 @@
                     let currentBestMove = null;
                     const maximizingPlayer = (player === WHITE);
 
-                    // MiniMaxの第1層
                     for (const move of validMoves) {
                         const nextBoard = copyBoard(currentBoard);
                         doMove(move.r, move.c, player, nextBoard);
@@ -366,7 +354,7 @@
                         break;
                     }
 
-                    if (isGameOver(currentBoard)) { // 終局に近づいたら
+                    if (isGameOver(currentBoard)) {
                          break;
                     }
                 }
@@ -376,7 +364,7 @@
 
 
         // ------------------------------------------------
-        // 初期化、描画、ターン管理、学習
+        // 初期化、描画、ターン管理
         // ------------------------------------------------
 
         function drawBoard(highlightMoves = true) {
@@ -399,13 +387,16 @@
                     }
 
                     const isValid = validMoves.some(m => m.r === r && m.c === c);
-                    if (isGameActive && !isAITurn && isValid) {
+                    
+                    // ★★★ 修正ポイント: プレイヤーのターンかつ有効な手のみイベントを設定 ★★★
+                    if (isGameActive && currentPlayer === BLACK && !isAITurn && isValid) {
                         if (highlightMoves) {
                             cell.classList.add('highlight');
                         }
-                        cell.onclick = () => handleMove(r, c);
+                        cell.onclick = () => handleMove(r, c); 
                     } else {
-                        cell.onclick = null;
+                        // AIのターン、ゲームオーバー、無効な場所ではイベントを解除
+                        cell.onclick = null; 
                         cell.classList.remove('highlight');
                     }
                 }
@@ -447,7 +438,7 @@
                 statusElement.innerHTML = `黒 vs 白 | **白 (AI)** が思考中... (制限時間 ${TIME_LIMIT/1000}秒)`;
                 
                 setTimeout(() => {
-                    const bestMove = getBestMove(board, WHITE, false); // 対戦モード
+                    const bestMove = getBestMove(board, WHITE, false);
 
                     if (bestMove) {
                         handleMove(bestMove.r, bestMove.c);
@@ -457,13 +448,15 @@
                     isAITurn = false;
                 }, 100);
             } else {
+                isAITurn = false; // プレイヤーのターンでは確実にfalse
                 drawBoard(true);
                 updateStatus();
             }
         }
         
         function handleMove(r, c) {
-            if (!isGameActive || (currentPlayer === WHITE && !isAITurn)) return;
+            // ★★★ 修正ポイント: プレイヤーのターンとisAITurnのチェックを明確化 ★★★
+            if (!isGameActive || currentPlayer === WHITE || isAITurn) return;
 
             const moveSuccessful = doMove(r, c, currentPlayer);
 
@@ -501,7 +494,6 @@
                 let history = []; 
 
                 while (!isGameOver(board)) {
-                    // **【修正点】isLearningModeをtrueにして高速学習モードを適用**
                     const move = getBestMove(board, currentPlayer, true); 
                     
                     if (move) {
@@ -513,7 +505,6 @@
                     }
                 }
 
-                // 勝敗判定と評価重みの更新
                 const winner = getWinner(board);
                 const reward = (winner === BLACK) ? 1 : (winner === WHITE) ? -1 : 0; 
 
@@ -541,8 +532,10 @@
         // ページロード時の処理
         window.onload = function() {
             setTimeout(() => {
+                // 学習実行
                 runLearning(100); 
                 
+                // 対戦開始
                 initGame();
                 checkTurn();
             }, 100); 
