@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>究極オセロAI（最終版：高速ランダム学習）</title>
+    <title>究極オセロAI（最終修正版：ターン処理強化）</title>
     <style>
         /* CSSは変更なし */
         body {
@@ -78,7 +78,6 @@
         const WHITE = 2;
         const EMPTY = 0;
         
-        // AIの思考時間制限 (ミリ秒) - 対戦モードのみ適用
         const TIME_LIMIT = 5000; 
         
         let transpositionTable = new Map();
@@ -234,7 +233,6 @@
         // ------------------------------------------------
 
         function minimax(boardState, depth, alpha, beta, maximizingPlayer) {
-            // **時間切れチェック（再帰の最上部）**
             if (performance.now() - startTime > TIME_LIMIT) {
                 return maximizingPlayer ? Infinity : -Infinity;
             }
@@ -293,18 +291,15 @@
             return bestScore;
         }
 
-        /** AIの最善手を選択 (学習モード/対戦モードの分岐あり) */
         function getBestMove(currentBoard, player, isLearningMode = false) {
             let validMoves = getValidMoves(currentBoard, player);
             if (validMoves.length === 0) return null;
 
             if (isLearningMode) {
-                // ★★★ 修正: 【学習モード】ランダムな有効な手を選択 ★★★
                 const randomIndex = Math.floor(Math.random() * validMoves.length);
                 return validMoves[randomIndex];
 
             } else {
-                // 【対戦モード】本格的な反復深化と時間制限探索
                 startTime = performance.now();
                 bestMoveInSearch = validMoves[0]; 
 
@@ -435,12 +430,27 @@
                 setTimeout(() => {
                     const bestMove = getBestMove(board, WHITE, false);
 
+                    // ★★★ 修正ポイント: AIの手を打つ処理を直接実行するロジックに修正 ★★★
                     if (bestMove) {
-                        handleMove(bestMove.r, bestMove.c);
+                        const r = bestMove.r;
+                        const c = bestMove.c;
+                        const moveSuccessful = doMove(r, c, currentPlayer);
+
+                        if (moveSuccessful) {
+                            transpositionTable.clear();
+                            currentPlayer = 3 - currentPlayer; // ターン交代
+                            isAITurn = false; // AIターン終了
+                            checkTurn(); // 次のターンチェックへ
+                        } else {
+                            // 置ける手が見つかったのに置けなかった場合
+                            isAITurn = false;
+                            updateStatus(); 
+                        }
                     } else {
+                        // AIがパスする場合
+                        isAITurn = false;
                         updateStatus(); 
                     }
-                    isAITurn = false;
                 }, 100);
             } else {
                 isAITurn = false;
@@ -457,6 +467,7 @@
             if (moveSuccessful) {
                 transpositionTable.clear(); 
                 currentPlayer = 3 - currentPlayer;
+                // ★★★ 修正ポイント: ターンを交代したら即座に次のターンチェックを行う ★★★
                 checkTurn();
             }
         }
@@ -488,7 +499,6 @@
                 let history = []; 
 
                 while (!isGameOver(board)) {
-                    // ★★★ 修正: 高速なランダム手選択モードを適用 ★★★
                     const move = getBestMove(board, currentPlayer, true); 
                     
                     if (move) {
@@ -496,7 +506,6 @@
                         doMove(move.r, move.c, currentPlayer);
                         currentPlayer = 3 - currentPlayer;
                     } else {
-                        // パスの処理
                         currentPlayer = 3 - currentPlayer;
                     }
                 }
@@ -504,7 +513,6 @@
                 const winner = getWinner(board);
                 const reward = (winner === BLACK) ? 1 : (winner === WHITE) ? -1 : 0; 
 
-                // 学習（重み更新）
                 for (const record of history) {
                     const state = record.board;
                     
@@ -529,10 +537,8 @@
         // ページロード時の処理
         window.onload = function() {
             setTimeout(() => {
-                // 学習実行（10回）
                 runLearning(10); 
                 
-                // 対戦開始
                 initGame();
                 checkTurn();
             }, 100); 
