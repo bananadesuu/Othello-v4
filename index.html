@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>究極オセロAI（ID, AB, TT, 学習）</title>
+    <style>
+        /* ------------------------------------------------ */
+        /* CSS: スタイリング */
+        /* ------------------------------------------------ */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            text-align: center;
+            background-color: #f4f4f9;
+            padding-top: 20px;
+        }
+        h1 {
+            color: #333;
+        }
+        #status {
+            margin: 15px 0;
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        #board {
+            border-collapse: collapse;
+            margin: 20px auto;
+            box-shadow: 5px 5px 15px rgba(0, 0, 0, 0.3);
+        }
+        #board td {
+            width: 60px;
+            height: 60px;
+            border: 1px solid #333;
+            background-color: #008000;
+            text-align: center;
+            cursor: pointer;
+            transition: background-color 0.1s;
+        }
+        #board td:hover {
+            background-color: #00a000;
+        }
+        .piece {
+            display: inline-block;
+            width: 80%;
+            height: 80%;
+            border-radius: 50%;
+            transition: transform 0.3s ease-out;
+            box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.5);
+        }
+        .black {
+            background-color: black;
+        }
+        .white {
+            background-color: white;
+        }
+        .highlight {
+            background-color: rgba(255, 255, 0, 0.4) !important;
+        }
+        #learning-info {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #f0e68c;
+            border-radius: 5px;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <h1>究極オセロAI デモ (ID + TT + $\alpha-\beta$ 探索)</h1>
+    <div id="status">システム初期化中...</div>
+    <div id="learning-info">AIが**100回**の自己対戦で学習中です...</div>
+    <table id="board">
+        </table>
+    
+    <script>
+        // ------------------------------------------------
+        // グローバル定数と変数
+        // ------------------------------------------------
+        const BOARD_SIZE = 8;
+        const BLACK = 1;
+        const WHITE = 2;
+        const EMPTY = 0;
+        
+        // AIの思考時間制限 (ミリ秒)
+        const TIME_LIMIT = 5000; 
+        
+        // トランポジションテーブル
+        // キー: 盤面のハッシュ値, 値: { depth:探索深さ, score:評価値, flag:フラグ }
+        let transpositionTable = new Map();
+        
+        let board;
+        let currentPlayer;
+        let isGameActive = false;
+        let isAITurn = false;
+        let startTime; // 探索開始時刻
+        let bestMoveInSearch = null; // 反復深化中に見つけた最善手
+        
+        const statusElement = document.getElementById('status');
+        const boardElement = document.getElementById('board');
+        const learningInfoElement = document.getElementById('learning-info');
+
+        // 評価関数の重み (学習対象のパラメータ)
+        let evaluationWeights = [
+            [ 100, -20,  10,   5,   5,  10, -20, 100],
+            [-20,  -50,  -2,  -2,  -2,  -2, -50, -20],
+            [ 10,   -2,   1,   1,   1,   1,  -2,  10],
+            [  5,   -2,   1,   0,   0,   1,  -2,   5],
+            [  5,   -2,   1,   0,   0,   1,  -2,   5],
+            [ 10,   -2,   1,   1,   1,   1,  -2,  10],
+            [-20,  -50,  -2,  -2,  -2,  -2, -50, -20],
+            [ 100, -20,  10,   5,   5,  10, -20, 100]
+        ];
+
+        const DIRECTIONS = [
+            [-1, 0], [-1, 1], [0, 1], [1, 1],
+            [1, 0], [1, -1], [0, -1], [-1, -1]
+        ];
+
+        // ------------------------------------------------
+        // ユーティリティ: Zobrist Hashing (簡易版)
+        // ------------------------------------------------
+        
+        // 盤面状態を一意のキー（ハッシュ値）に変換する関数。
+        // ※厳密なZobristハッシュはより複雑ですが、ここでは盤面を文字列化してキーとします。
+        function getBoardHash(boardState) {
+            return boardState.flat().join('');
+        }
+
+        // ------------------------------------------------
+        // 基本ゲームロジック (省略せず全て含める)
+        // ------------------------------------------------
+
+        function copyBoard(b) {
+            return b.map(row => [...row]);
+        }
+        
+        function getFlippableDiscs(boardState, r, c, player) {
+            // ... (前述のロジックと同じ) ...
+            const opponent = 3 - player;
+            let flippable = [];
+
+            if (boardState[r][c] !== EMPTY) return []; 
+
+            for (const [dr, dc] of DIRECTIONS) {
+                let currentFlippable = [];
+                let cr = r + dr;
+                let cc = c + dc;
+
+                while (cr >= 0 && cr < BOARD_SIZE && cc >= 0 && cc < BOARD_SIZE && boardState[cr][cc] === opponent) {
+                    currentFlippable.push({ r: cr, c: cc });
+                    cr += dr;
+                    cc += dc;
+                }
+
+                if (cr >= 0 && cr < BOARD_SIZE && cc >= 0 && cc < BOARD_SIZE && boardState[cr][cc] === player) {
+                    flippable = flippable.concat(currentFlippable);
+                }
+            }
+            return flippable;
+        }
+
+        function checkValidMove(boardState, r, c, player) {
+            if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE || boardState[r][c] !== EMPTY) {
+                return false;
+            }
+            return getFlippableDiscs(boardState, r, c, player).length > 0;
+        }
+
+        function doMove(r, c, player, currentBoard = board) {
+            const flippable = getFlippableDiscs(currentBoard, r, c, player);
+            if (flippable.length === 0) return false;
+
+            currentBoard[r][c] = player;
+            for (const disc of flippable) {
+                currentBoard[disc.r][disc.c] = player;
+            }
+            return true;
+        }
+        
+        function getValidMoves(boardState, player) {
+            let moves = [];
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    if (checkValidMove(boardState, r, c, player)) {
+                        moves.push({ r: r, c: c });
+                    }
+                }
+            }
+            return moves;
+        }
+        
+        function isGameOver(boardState) {
+            return getValidMoves(boardState, BLACK).length === 0 && getValidMoves(boardState, WHITE).length === 0;
+        }
+
+        function getWinner(boardState) {
+            let blackCount = boardState.flat().filter(p => p === BLACK).length;
+            let whiteCount = boardState.flat().filter(p => p === WHITE).length;
+            
+            if (blackCount > whiteCount) return BLACK;
+            if (whiteCount > blackCount) return WHITE;
+            return EMPTY;
+        }
+
+        // ------------------------------------------------
+        // 評価関数 (前述のロジックと同じ)
+        // ------------------------------------------------
+
+        function evaluateBoard(currentBoard, player) {
+            const opponent = 3 - player;
+            let score = 0;
+            let totalPieces = 0;
+            
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    if (currentBoard[r][c] !== EMPTY) {
+                        totalPieces++;
+                    }
+                }
+            }
+            
+            let phaseWeight = totalPieces < 50 ? 1 : 50; 
+
+            // 2. 重み付けによる評価 (確定性)
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    if (currentBoard[r][c] === player) {
+                        score += evaluationWeights[r][c];
+                    } else if (currentBoard[r][c] === opponent) {
+                        score -= evaluationWeights[r][c];
+                    }
+                }
+            }
+            
+            // 3. 有効な手の数の評価 (機動性)
+            const playerMoves = getValidMoves(currentBoard, player).length;
+            const opponentMoves = getValidMoves(currentBoard, opponent).length;
+            score += 20 * (playerMoves - opponentMoves); 
+
+            // 4. 石の数の評価 (終盤の決め手)
+            const playerPieces = currentBoard.flat().filter(p => p === player).length;
+            const opponentPieces = currentBoard.flat().filter(p => p === opponent).length;
+            score += phaseWeight * (playerPieces - opponentPieces); 
+
+            return score;
+        }
+
+        // ------------------------------------------------
+        // AIロジック: MiniMax with Alpha-Beta Pruning & Transposition Table
+        // ------------------------------------------------
+
+        /**
+         * MiniMax法 (Alpha-Beta Pruning, TT, Time Check付き)
+         */
+        function minimax(boardState, depth, alpha, beta, maximizingPlayer) {
+            // **時間切れチェック**
+            if (performance.now() - startTime > TIME_LIMIT) {
+                return maximizingPlayer ? Infinity : -Infinity; // 時間切れフラグとして非常に大きな値を返す
+            }
+
+            const player = maximizingPlayer ? WHITE : BLACK;
+            const validMoves = getValidMoves(boardState, player);
+
+            // 終端条件 (Terminal States)
+            if (depth === 0 || isGameOver(boardState) || validMoves.length === 0) {
+                return evaluateBoard(boardState, WHITE); // AI (WHITE) の視点で評価
+            }
+            
+            // **トランポジションテーブルの参照**
+            const hash = getBoardHash(boardState);
+            const entry = transpositionTable.get(hash);
+            if (entry && entry.depth >= depth) {
+                // 保存されている探索深さが現在の探索深さ以上なら、そのスコアを信頼できる
+                if (entry.flag === 'EXACT') return entry.score;
+                if (entry.flag === 'LOWER' && entry.score > alpha) alpha = entry.score;
+                if (entry.flag === 'UPPER' && entry.score < beta) beta = entry.score;
+                if (alpha >= beta) return entry.score;
+            }
+
+            let bestScore = maximizingPlayer ? -Infinity : Infinity;
+            let flag = 'UPPER'; // スコアが真のスコアの上限値であることを示す
+
+            for (const move of validMoves) {
+                const nextBoard = copyBoard(boardState);
+                doMove(move.r, move.c, player, nextBoard);
+                
+                const evaluation = minimax(nextBoard, depth - 1, alpha, beta, !maximizingPlayer);
+
+                // **時間切れチェック** (再帰の戻り値が時間切れフラグの場合)
+                if (Math.abs(evaluation) === Infinity) return evaluation;
+
+                if (maximizingPlayer) {
+                    bestScore = Math.max(bestScore, evaluation);
+                    alpha = Math.max(alpha, bestScore);
+                } else {
+                    bestScore = Math.min(bestScore, evaluation);
+                    beta = Math.min(beta, bestScore);
+                }
+
+                if (beta <= alpha) {
+                    flag = maximizingPlayer ? 'LOWER' : 'UPPER'; // カットが発生した場合、スコアは下限値/上限値となる
+                    break;
+                }
+            }
+            
+            if (bestScore > alpha && bestScore < beta) {
+                flag = 'EXACT'; // AlphaとBetaの間にある場合、真のスコア
+            }
+
+            // **トランポジションテーブルへの保存**
+            transpositionTable.set(hash, {
+                depth: depth,
+                score: bestScore,
+                flag: flag
+            });
+
+            return bestScore;
+        }
+
+        /** AIの最善手を選択 (反復深化の呼び出し) */
+        function getBestMove(currentBoard, player) {
+            let validMoves = getValidMoves(currentBoard, player);
+            if (validMoves.length === 0) return null;
+
+            startTime = performance.now();
+            bestMoveInSearch = validMoves[0]; // 最低でも最初の有効手を返す
+
+            // **反復深化 (Iterative Deepening)**
+            for (let depth = 1; ; depth++) {
+                if (performance.now() - startTime > TIME_LIMIT) {
+                    break; // 時間切れ
+                }
+
+                let currentBestScore = -Infinity;
+                let currentBestMove = null;
+                const maximizingPlayer = (player === WHITE);
+                
+                // 有効な手を前の反復で良かった順にソート（MiniMax/AB法の効率を上げる）
+                // ※ここでは単純化のためソートは省略
+
+                for (const move of validMoves) {
+                    const nextBoard = copyBoard(currentBoard);
+                    doMove(move.r, move.c, player, nextBoard);
+                    
+                    const score = minimax(nextBoard, depth - 1, -Infinity, Infinity, !maximizingPlayer);
+
+                    // 時間切れチェック
+                    if (Math.abs(score) === Infinity) {
+                        console.log(`探索深度 ${depth} で時間切れ。`);
+                        return bestMoveInSearch; // これまでの最善手で終了
+                    }
+
+                    if (score > currentBestScore) {
+                        currentBestScore = score;
+                        currentBestMove = move;
+                    }
+                }
+
+                // 安定して探索が完了した場合、結果を更新
+                if (currentBestMove) {
+                    bestMoveInSearch = currentBestMove;
+                    console.log(`深さ ${depth} 探索完了。スコア: ${currentBestScore.toFixed(2)}`);
+                } else {
+                    // 全探索が完了したか、他に理由で手がなかった場合（通常ありえない）
+                    break;
+                }
+
+                if (isGameOver(copyBoard(currentBoard))) {
+                    break; // 全ての局面を読み切った場合
+                }
+            }
+
+            return bestMoveInSearch;
+        }
+
+        // ------------------------------------------------
+        // 初期化、描画、ターン管理、学習 (前述のロジックと同じ)
+        // ------------------------------------------------
+
+        function drawBoard(highlightMoves = true) {
+            // ... (前述のロジックと同じ) ...
+            boardElement.innerHTML = '';
+            const validMoves = getValidMoves(board, currentPlayer);
+
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                const row = boardElement.insertRow(r);
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    const cell = row.insertCell(c);
+                    cell.dataset.r = r;
+                    cell.dataset.c = c;
+                    
+                    if (board[r][c] === BLACK) {
+                        cell.innerHTML = '<span class="piece black"></span>';
+                    } else if (board[r][c] === WHITE) {
+                        cell.innerHTML = '<span class="piece white"></span>';
+                    } else {
+                        cell.innerHTML = '';
+                    }
+
+                    const isValid = validMoves.some(m => m.r === r && m.c === c);
+                    if (isGameActive && !isAITurn && isValid) {
+                        if (highlightMoves) {
+                            cell.classList.add('highlight');
+                        }
+                        cell.onclick = () => handleMove(r, c);
+                    } else {
+                        cell.onclick = null;
+                        cell.classList.remove('highlight');
+                    }
+                }
+            }
+        }
+
+        function updateStatus() {
+            // ... (前述のロジックと同じ) ...
+            const validMoves = getValidMoves(board, currentPlayer);
+            let blackCount = board.flat().filter(p => p === BLACK).length;
+            let whiteCount = board.flat().filter(p => p === WHITE).length;
+            
+            let statusText = `黒 (${blackCount}) vs 白 (${whiteCount}) | `;
+
+            if (isGameOver(board)) {
+                isGameActive = false;
+                const winner = getWinner(board);
+                if (winner === BLACK) statusText += 'ゲーム終了: **黒**の勝利！';
+                else if (winner === WHITE) statusText += 'ゲーム終了: **白**（AI）の勝利！';
+                else statusText += 'ゲーム終了: **引き分け**！';
+            } else if (validMoves.length === 0) {
+                statusText += `${currentPlayer === BLACK ? '黒' : '白'}は置ける場所がないため**パス**します。`;
+                setTimeout(() => {
+                    currentPlayer = 3 - currentPlayer;
+                    checkTurn();
+                }, 500);
+            } else {
+                statusText += `${currentPlayer === BLACK ? '黒' : '白'}の番です。`;
+            }
+
+            statusElement.innerHTML = statusText;
+        }
+
+        function checkTurn() {
+            if (!isGameActive) return;
+
+            if (currentPlayer === WHITE) {
+                isAITurn = true;
+                drawBoard(false);
+                statusElement.innerHTML = `黒 vs 白 | **白 (AI)** が思考中... (制限時間 ${TIME_LIMIT/1000}秒)`;
+                
+                setTimeout(() => {
+                    const bestMove = getBestMove(board, WHITE);
+
+                    if (bestMove) {
+                        handleMove(bestMove.r, bestMove.c);
+                    } else {
+                        updateStatus(); 
+                    }
+                    isAITurn = false;
+                }, 100);
+            } else {
+                drawBoard(true);
+                updateStatus();
+            }
+        }
+        
+        function handleMove(r, c) {
+            if (!isGameActive || (currentPlayer === WHITE && !isAITurn)) return;
+
+            const moveSuccessful = doMove(r, c, currentPlayer);
+
+            if (moveSuccessful) {
+                // トランポジションテーブルをクリア（新しいゲームのため）
+                transpositionTable.clear(); 
+                currentPlayer = 3 - currentPlayer;
+                checkTurn();
+            }
+        }
+
+        function initGame(isLearning = false) {
+            board = Array(BOARD_SIZE).fill(0).map(() => Array(BOARD_SIZE).fill(EMPTY));
+            board[3][3] = WHITE;
+            board[3][4] = BLACK;
+            board[4][3] = BLACK;
+            board[4][4] = WHITE;
+            currentPlayer = BLACK;
+            transpositionTable.clear(); // ゲーム開始時にTTをクリア
+            
+            if (!isLearning) {
+                isGameActive = true;
+                drawBoard();
+                updateStatus();
+                learningInfoElement.textContent = `AIの学習が完了しました（探索時間 ${TIME_LIMIT/1000}秒）。プレイヤー（黒）の番です。`;
+            }
+        }
+        
+        function runLearning(iterations) {
+            const LEARNING_RATE = 0.05;
+            
+            learningInfoElement.textContent = `AIが**${iterations}回**の自己対戦で学習中です... (0%)`;
+
+            for (let i = 0; i < iterations; i++) {
+                initGame(true);
+                let history = []; 
+
+                while (!isGameOver(board)) {
+                    // 学習時は時間制限のない単純な貪欲法（または深い探索）を使う
+                    // ここでは、MiniMaxを呼び出すため、TTをクリアし、深度1の探索を行う。
+                    transpositionTable.clear();
+                    startTime = performance.now(); // 学習時の時間チェックをスキップするため
+                    const move = getBestMove(board, currentPlayer); 
+                    
+                    if (move) {
+                        history.push({ board: copyBoard(board), move: move, player: currentPlayer });
+                        doMove(move.r, move.c, currentPlayer);
+                        currentPlayer = 3 - currentPlayer;
+                    } else {
+                        currentPlayer = 3 - currentPlayer;
+                    }
+                }
+
+                // 勝敗判定
+                const winner = getWinner(board);
+                const reward = (winner === BLACK) ? 1 : (winner === WHITE) ? -1 : 0; 
+
+                // 評価重みの更新
+                for (const record of history) {
+                    const state = record.board;
+                    
+                    for (let r = 0; r < BOARD_SIZE; r++) {
+                        for (let c = 0; c < BOARD_SIZE; c++) {
+                            if (state[r][c] === BLACK) {
+                                evaluationWeights[r][c] += LEARNING_RATE * reward;
+                            } else if (state[r][c] === WHITE) {
+                                evaluationWeights[r][c] -= LEARNING_RATE * reward;
+                            }
+                        }
+                    }
+                }
+                
+                // 進捗表示
+                if ((i + 1) % (iterations / 10) === 0 || i === iterations - 1) {
+                    learningInfoElement.textContent = `AIが**${iterations}回**の自己対戦で学習中です... (${Math.round(((i + 1) / iterations) * 100)}%)
