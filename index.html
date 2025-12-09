@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>究極オセロAI（最終修正版）</title>
+    <title>究極オセロAI（最終版：高速ランダム学習）</title>
     <style>
         /* CSSは変更なし */
         body {
@@ -236,7 +236,6 @@
         function minimax(boardState, depth, alpha, beta, maximizingPlayer) {
             // **時間切れチェック（再帰の最上部）**
             if (performance.now() - startTime > TIME_LIMIT) {
-                // 大きな値を返して、上位の関数で処理を強制終了させるためのフラグとして機能させる
                 return maximizingPlayer ? Infinity : -Infinity;
             }
 
@@ -244,7 +243,6 @@
             const validMoves = getValidMoves(boardState, player);
 
             if (depth === 0 || isGameOver(boardState) || validMoves.length === 0) {
-                // 評価は常にAI（白）の視点で行う
                 return evaluateBoard(boardState, WHITE);
             }
             
@@ -266,7 +264,6 @@
                 
                 const evaluation = minimax(nextBoard, depth - 1, alpha, beta, !maximizingPlayer);
 
-                // minimaxからの戻り値が時間切れフラグの場合
                 if (Math.abs(evaluation) === Infinity) return evaluation;
 
                 if (maximizingPlayer) {
@@ -302,22 +299,9 @@
             if (validMoves.length === 0) return null;
 
             if (isLearningMode) {
-                // 【学習モード】高速な貪欲法 (1手先読み)
-                let bestScore = -Infinity;
-                let bestMove = validMoves[0];
-                
-                for (const move of validMoves) {
-                    const nextBoard = copyBoard(currentBoard);
-                    doMove(move.r, move.c, player, nextBoard);
-                    // 評価は常にAI（白）の視点で行う
-                    const score = evaluateBoard(nextBoard, player); 
-
-                    if (score > bestScore) {
-                        bestScore = score;
-                        bestMove = move;
-                    }
-                }
-                return bestMove;
+                // ★★★ 修正: 【学習モード】ランダムな有効な手を選択 ★★★
+                const randomIndex = Math.floor(Math.random() * validMoves.length);
+                return validMoves[randomIndex];
 
             } else {
                 // 【対戦モード】本格的な反復深化と時間制限探索
@@ -328,7 +312,6 @@
 
                 for (let depth = 1; ; depth++) {
                     
-                    // ★★★ 修正1: 反復深化の開始時にも時間切れをチェック ★★★
                     if (performance.now() - startTime > TIME_LIMIT) {
                         console.log(`深さ ${depth} 探索開始前に時間切れ。`);
                         return bestMoveInSearch;
@@ -338,10 +321,8 @@
                     let currentBestMove = null;
                     const maximizingPlayer = (player === WHITE);
 
-                    // MiniMaxの第1層
                     for (const move of validMoves) {
                         
-                        // ★★★ 修正2: 各手の探索前にも時間切れをチェック ★★★
                         if (performance.now() - startTime > TIME_LIMIT) {
                             console.log(`深さ ${depth} 探索中に時間切れ。`);
                             return bestMoveInSearch;
@@ -352,7 +333,6 @@
 
                         const score = minimax(nextBoard, depth - 1, -Infinity, Infinity, !maximizingPlayer);
 
-                        // ★★★ 修正3: minimaxからの時間切れフラグをチェック ★★★
                         if (Math.abs(score) === Infinity) {
                             console.log(`深さ ${depth} の再帰呼び出し中に時間切れ。`);
                             return bestMoveInSearch;
@@ -508,6 +488,7 @@
                 let history = []; 
 
                 while (!isGameOver(board)) {
+                    // ★★★ 修正: 高速なランダム手選択モードを適用 ★★★
                     const move = getBestMove(board, currentPlayer, true); 
                     
                     if (move) {
@@ -521,7 +502,6 @@
                 }
 
                 const winner = getWinner(board);
-                // 報酬設定（黒が勝ったら+1, 白が勝ったら-1, 引き分けは0）
                 const reward = (winner === BLACK) ? 1 : (winner === WHITE) ? -1 : 0; 
 
                 // 学習（重み更新）
@@ -540,5 +520,23 @@
                 }
                 
                 if ((i + 1) % (iterations / 10) === 0 || i === iterations - 1) {
-                    // 進捗をブラウザに反映（非同期のため若干遅れることがあります）
-                    learningInfoElement.textContent = `AIが**${iterations}回**の自己対戦で学習中です... (${Math.round(((i + 1) / ite
+                    learningInfoElement.textContent = `AIが**${iterations}回**の自己対戦で学習中です... (${Math.round(((i + 1) / iterations) * 100)}%)`;
+                }
+            }
+            console.log("学習終了後の評価重み:", evaluationWeights);
+        }
+
+        // ページロード時の処理
+        window.onload = function() {
+            setTimeout(() => {
+                // 学習実行（10回）
+                runLearning(10); 
+                
+                // 対戦開始
+                initGame();
+                checkTurn();
+            }, 100); 
+        };
+    </script>
+</body>
+</html>
