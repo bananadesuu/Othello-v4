@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>究極オセロAI（修正版）</title>
+    <title>究極オセロAI（最終修正版）</title>
     <style>
         /* CSSは変更なし */
         body {
@@ -78,6 +78,7 @@
         const WHITE = 2;
         const EMPTY = 0;
         
+        // AIの思考時間制限 (ミリ秒) - 対戦モードのみ適用
         const TIME_LIMIT = 5000; 
         
         let transpositionTable = new Map();
@@ -207,7 +208,6 @@
             
             let phaseWeight = totalPieces < 50 ? 1 : 50; 
 
-            // 2. 重み付けによる評価 (確定性)
             for (let r = 0; r < BOARD_SIZE; r++) {
                 for (let c = 0; c < BOARD_SIZE; c++) {
                     if (currentBoard[r][c] === player) {
@@ -218,12 +218,10 @@
                 }
             }
             
-            // 3. 有効な手の数の評価 (機動性)
             const playerMoves = getValidMoves(currentBoard, player).length;
             const opponentMoves = getValidMoves(currentBoard, opponent).length;
             score += 20 * (playerMoves - opponentMoves); 
 
-            // 4. 石の数の評価 (終盤の決め手)
             const playerPieces = currentBoard.flat().filter(p => p === player).length;
             const opponentPieces = currentBoard.flat().filter(p => p === opponent).length;
             score += phaseWeight * (playerPieces - opponentPieces); 
@@ -236,6 +234,7 @@
         // ------------------------------------------------
 
         function minimax(boardState, depth, alpha, beta, maximizingPlayer) {
+            // **時間切れチェック（再帰の最上部）**
             if (performance.now() - startTime > TIME_LIMIT) {
                 return maximizingPlayer ? Infinity : -Infinity;
             }
@@ -265,6 +264,7 @@
                 
                 const evaluation = minimax(nextBoard, depth - 1, alpha, beta, !maximizingPlayer);
 
+                // minimaxからの戻り値が時間切れフラグの場合
                 if (Math.abs(evaluation) === Infinity) return evaluation;
 
                 if (maximizingPlayer) {
@@ -294,6 +294,7 @@
             return bestScore;
         }
 
+        /** AIの最善手を選択 (学習モード/対戦モードの分岐あり) */
         function getBestMove(currentBoard, player, isLearningMode = false) {
             let validMoves = getValidMoves(currentBoard, player);
             if (validMoves.length === 0) return null;
@@ -318,26 +319,39 @@
             } else {
                 // 【対戦モード】本格的な反復深化と時間制限探索
                 startTime = performance.now();
-                bestMoveInSearch = validMoves[0];
+                bestMoveInSearch = validMoves[0]; 
 
                 transpositionTable.clear();
 
                 for (let depth = 1; ; depth++) {
+                    
+                    // ★★★ 修正1: 反復深化の開始時にも時間切れをチェック ★★★
                     if (performance.now() - startTime > TIME_LIMIT) {
-                        break; 
+                        console.log(`深さ ${depth} 探索開始前に時間切れ。`);
+                        return bestMoveInSearch;
                     }
 
                     let currentBestScore = -Infinity;
                     let currentBestMove = null;
                     const maximizingPlayer = (player === WHITE);
 
+                    // MiniMaxの第1層
                     for (const move of validMoves) {
+                        
+                        // ★★★ 修正2: 各手の探索前にも時間切れをチェック ★★★
+                        if (performance.now() - startTime > TIME_LIMIT) {
+                            console.log(`深さ ${depth} 探索中に時間切れ。`);
+                            return bestMoveInSearch;
+                        }
+                        
                         const nextBoard = copyBoard(currentBoard);
                         doMove(move.r, move.c, player, nextBoard);
 
                         const score = minimax(nextBoard, depth - 1, -Infinity, Infinity, !maximizingPlayer);
 
+                        // ★★★ 修正3: minimaxからの時間切れフラグをチェック ★★★
                         if (Math.abs(score) === Infinity) {
+                            console.log(`深さ ${depth} の再帰呼び出し中に時間切れ。`);
                             return bestMoveInSearch;
                         }
 
@@ -388,14 +402,12 @@
 
                     const isValid = validMoves.some(m => m.r === r && m.c === c);
                     
-                    // ★★★ 修正ポイント: プレイヤーのターンかつ有効な手のみイベントを設定 ★★★
                     if (isGameActive && currentPlayer === BLACK && !isAITurn && isValid) {
                         if (highlightMoves) {
                             cell.classList.add('highlight');
                         }
                         cell.onclick = () => handleMove(r, c); 
                     } else {
-                        // AIのターン、ゲームオーバー、無効な場所ではイベントを解除
                         cell.onclick = null; 
                         cell.classList.remove('highlight');
                     }
@@ -448,14 +460,13 @@
                     isAITurn = false;
                 }, 100);
             } else {
-                isAITurn = false; // プレイヤーのターンでは確実にfalse
+                isAITurn = false;
                 drawBoard(true);
                 updateStatus();
             }
         }
         
         function handleMove(r, c) {
-            // ★★★ 修正ポイント: プレイヤーのターンとisAITurnのチェックを明確化 ★★★
             if (!isGameActive || currentPlayer === WHITE || isAITurn) return;
 
             const moveSuccessful = doMove(r, c, currentPlayer);
@@ -532,14 +543,7 @@
         // ページロード時の処理
         window.onload = function() {
             setTimeout(() => {
-                // 学習実行
                 runLearning(100); 
                 
-                // 対戦開始
                 initGame();
-                checkTurn();
-            }, 100); 
-        };
-    </script>
-</body>
-</html>
+        
