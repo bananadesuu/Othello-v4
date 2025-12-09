@@ -65,7 +65,7 @@
 <body>
     <h1>究極オセロAI デモ (ID + TT + $\alpha-\beta$ 探索)</h1>
     <div id="status">システム初期化中...</div>
-    <div id="learning-info">AIが**100回**の自己対戦で学習中です...</div>
+    <div id="learning-info">AIが**10回**の自己対戦で学習中です...</div>
     <table id="board">
         </table>
     
@@ -236,6 +236,7 @@
         function minimax(boardState, depth, alpha, beta, maximizingPlayer) {
             // **時間切れチェック（再帰の最上部）**
             if (performance.now() - startTime > TIME_LIMIT) {
+                // 大きな値を返して、上位の関数で処理を強制終了させるためのフラグとして機能させる
                 return maximizingPlayer ? Infinity : -Infinity;
             }
 
@@ -243,6 +244,7 @@
             const validMoves = getValidMoves(boardState, player);
 
             if (depth === 0 || isGameOver(boardState) || validMoves.length === 0) {
+                // 評価は常にAI（白）の視点で行う
                 return evaluateBoard(boardState, WHITE);
             }
             
@@ -307,6 +309,7 @@
                 for (const move of validMoves) {
                     const nextBoard = copyBoard(currentBoard);
                     doMove(move.r, move.c, player, nextBoard);
+                    // 評価は常にAI（白）の視点で行う
                     const score = evaluateBoard(nextBoard, player); 
 
                     if (score > bestScore) {
@@ -512,13 +515,16 @@
                         doMove(move.r, move.c, currentPlayer);
                         currentPlayer = 3 - currentPlayer;
                     } else {
+                        // パスの処理
                         currentPlayer = 3 - currentPlayer;
                     }
                 }
 
                 const winner = getWinner(board);
+                // 報酬設定（黒が勝ったら+1, 白が勝ったら-1, 引き分けは0）
                 const reward = (winner === BLACK) ? 1 : (winner === WHITE) ? -1 : 0; 
 
+                // 学習（重み更新）
                 for (const record of history) {
                     const state = record.board;
                     
@@ -534,16 +540,5 @@
                 }
                 
                 if ((i + 1) % (iterations / 10) === 0 || i === iterations - 1) {
-                    learningInfoElement.textContent = `AIが**${iterations}回**の自己対戦で学習中です... (${Math.round(((i + 1) / iterations) * 100)}%)`;
-                }
-            }
-            console.log("学習終了後の評価重み:", evaluationWeights);
-        }
-
-        // ページロード時の処理
-        window.onload = function() {
-            setTimeout(() => {
-                runLearning(100); 
-                
-                initGame();
-        
+                    // 進捗をブラウザに反映（非同期のため若干遅れることがあります）
+                    learningInfoElement.textContent = `AIが**${iterations}回**の自己対戦で学習中です... (${Math.round(((i + 1) / ite
